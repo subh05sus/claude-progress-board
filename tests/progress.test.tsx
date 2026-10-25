@@ -21,7 +21,7 @@ let now = Date.UTC(2026, 9, 25, 10, 0, 0)
 // The store all sessions share, in memory.
 const store = new Map<string, unknown>()
 
-const engine = (on: Parameters<Parameters<typeof test>[1]>[1]) => {
+const engine = (on: Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1]) => {
   store.clear()
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
@@ -86,6 +86,39 @@ test('a plan and a finished step show in the dashboard', async ($, on) => {
   }
 })
 
+test('time left counts down between steps and resets when one finishes', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/Users/me/projects/my-app', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: TOOL,
+    action: 'plan',
+    title: 'Countdown',
+    steps: [{ title: 'One' }, { title: 'Two' }, { title: 'Three' }],
+  })
+  const summary = async () => {
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    const text = (await ui.find({ type: 'Text', text: /of 3 steps/ }))?.text
+    await ui.unmount()
+    return text
+  }
+
+  now += 10 * 60 * 1000
+  await $.tool.call({ tool: TOOL, action: 'done', step: 1 })
+  expect(await summary()).toBe('1 of 3 steps · 10m 00s elapsed · ~20m 00s left')
+
+  // While step 2 is in progress the estimate falls, it does not grow.
+  now += 3 * 60 * 1000
+  expect(await summary()).toBe('1 of 3 steps · 13m 00s elapsed · ~17m 00s left')
+
+  // Past the estimate it says so instead of counting below zero.
+  now += 18 * 60 * 1000
+  expect(await summary()).toBe('1 of 3 steps · 31m 00s elapsed · running over')
+
+  // A finished step sets a fresh pace: 31m for 2 steps, so ~15m 30s for the last.
+  await $.tool.call({ tool: TOOL, action: 'done', step: 2 })
+  expect(await summary()).toBe('2 of 3 steps · 31m 00s elapsed · ~15m 30s left')
+})
+
 test('finish takes the plan to 100%', async ($, on) => {
   engine(on)
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
@@ -128,7 +161,7 @@ test('a quiet board gets a check-in after 5 minutes, then not again right away',
 
 const HINT = { plugin: 'progress-board', component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
 
-const engineHint = (on: Parameters<Parameters<typeof test>[1]>[1]) =>
+const engineHint = (on: Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1]) =>
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text dimColor>? for shortcuts</Text>
@@ -179,7 +212,7 @@ test('Mission control lists every live session, with a Sessions button beside Op
   expect((store.get('session:this-session') as { title?: string })?.title).toBe('Revamp gradebook')
 })
 
-const hudEngine = (on: Parameters<Parameters<typeof test>[1]>[1], git: 'none' | 'dirty') => {
+const hudEngine = (on: Parameters<Extract<Parameters<typeof test>[1], (...args: never[]) => unknown>>[1], git: 'none' | 'dirty') => {
   const iso = (ms: number) => new Date(ms).toISOString()
   on('session.usage', () => ({
     value: {
@@ -201,10 +234,10 @@ const hudEngine = (on: Parameters<Parameters<typeof test>[1]>[1], git: 'none' | 
   on('process.run', (_, e) => {
     const argv = e.argv as readonly string[]
     if (argv[0] === 'sh')
-      return { value: { exitCode: 0, stdout: '{"type":"ai-title","aiTitle":"Auto-retry for mid-response connection loss"}\n', stderr: '', isStdoutTruncated: false } }
-    if (git === 'none') return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false } }
-    if (argv[1] === 'branch') return { value: { exitCode: 0, stdout: 'main\n', stderr: '', isStdoutTruncated: false } }
-    return { value: { exitCode: 0, stdout: ' M hooks/register.tsx\n', stderr: '', isStdoutTruncated: false } }
+      return { value: { exitCode: 0, stdout: '{"type":"ai-title","aiTitle":"Auto-retry for mid-response connection loss"}\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (git === 'none') return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false, isStderrTruncated: false } }
+    if (argv[1] === 'branch') return { value: { exitCode: 0, stdout: 'main\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout: ' M hooks/register.tsx\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
 }
 

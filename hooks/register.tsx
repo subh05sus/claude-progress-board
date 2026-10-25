@@ -129,12 +129,19 @@ const percentOf = (plan: Plan) => {
 
 const countDone = (plan: Plan) => plan.steps.filter(s => s.status === 'done' || s.status === 'skipped').length
 
+// Time left: the pace is fixed when a step finishes, then counts down until the next one,
+// so the estimate falls each second instead of growing while a step is in progress.
+// Below zero means the work in progress is running over the estimate.
 const etaOf = (plan: Plan, now: number): number | undefined => {
   if (plan.finishedAt !== undefined) return undefined
   const done = doneWeight(plan)
   const left = totalWeight(plan) - done
   if (done === 0 || left <= 0) return undefined
-  return ((now - plan.startedAt) / done) * left
+  const lastDoneAt = plan.steps.reduce(
+    (latest, s) => (s.status === 'done' || s.status === 'skipped' ? Math.max(latest, s.doneAt ?? 0) : latest),
+    plan.startedAt,
+  )
+  return ((lastDoneAt - plan.startedAt) / done) * left - (now - lastDoneAt)
 }
 
 const fmtDur = (ms: number) => {
@@ -852,7 +859,7 @@ export const register: Register = on => {
     const summary = isDone
       ? `${countDone(plan)} of ${plan.steps.length} steps · done in ${fmtDur(elapsed)}`
       : `${countDone(plan)} of ${plan.steps.length} steps · ${fmtDur(elapsed)} elapsed` +
-        (eta !== undefined ? ` · ~${fmtDur(eta)} left` : '')
+        (eta === undefined ? '' : eta > 0 ? ` · ~${fmtDur(eta)} left` : ' · running over')
 
     // What the working step is doing right now: the last command or edit since it started.
     const workingStep = plan.steps.find(s => s.status === 'working')
