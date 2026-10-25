@@ -52,18 +52,21 @@ test('a plan and a finished step show in the dashboard', async ($, on) => {
   expect(String(done.result)).toContain('Now on step 2')
 
   await $.tool.call({ tool: 'Bash', command: 'pnpm tsc --noEmit' })
+  await $.tool.call({ tool: 'Bash', command: 'cd /Users/me/projects/my-app && FOO=1 claude plugin list 2>&1 | grep -B1 progress' })
   await $.tool.call({ tool: 'Edit', file_path: '/Users/me/projects/my-app/app/settings/form.tsx', old_string: 'a', new_string: 'b' })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect((await ui.find({ type: 'Text', text: /settings page/ }))?.text).toBe('Revamp settings page')
     expect((await ui.find({ type: 'Text', text: /^25%$/ }))?.text).toBe('25%')
-    expect((await ui.find({ type: 'Text', text: /✔ done/ }))?.text).toBe('✔ done')
-    expect((await ui.find({ type: 'Text', text: /● working/ }))?.text).toBe('● working')
-    expect((await ui.find({ type: 'Text', text: /files? changed/ }))?.text).toContain('1 file changed')
-    expect((await ui.find({ type: 'Text', text: /pnpm tsc/ }))?.text).toBe('pnpm tsc --noEmit')
+    expect((await ui.find({ type: 'Text', text: /of 3 steps/ }))?.text).toBe('1 of 3 steps · 4m 10s elapsed · ~12m 30s left')
     expect((await ui.find({ type: 'Text', text: /^4m 10s$/ }))?.text).toBe('4m 10s')
-    expect((await ui.find({ type: 'Text', text: /ETA/ }))?.text).toBe('ETA ~12m 30s')
+    expect((await ui.find({ type: 'Text', text: /^0s…$/ }))?.text).toBe('0s…')
+    expect((await ui.find({ type: 'Text', text: /editing:/ }))?.text).toBe('└ editing: form.tsx')
+    // Recent: the last 3 events, newest first, each one short line.
+    const recent = (await ui.findAll({ type: 'Text', text: /^(form\.tsx|claude plugin list …|pnpm tsc --noEmit|✔ Audit current pages)$/ })).map(t => t.text)
+    expect(recent).toEqual(['form.tsx', 'claude plugin list …', 'pnpm tsc --noEmit'])
+    expect((await ui.find({ type: 'Text', text: /command/ }))?.text).toBe('1 file · 2 commands')
     await ui.unmount()
   }
 })

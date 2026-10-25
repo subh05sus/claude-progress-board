@@ -128,24 +128,31 @@ const shortPath = (p: string) => {
 
 const basename = (p: string) => p.split('/').filter(Boolean).pop() ?? p
 
+const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, Math.max(1, max - 1)).trimEnd()}…`)
+
+// "cd x && FOO=1 claude plugin list 2>&1 | grep y" -> "claude plugin list …"
+const shortCommand = (command: string) => {
+  const segments = command.split(/&&|\|\||;|\|/).map(s => s.trim()).filter(Boolean)
+  const main = segments.find(s => !/^(cd|export|set|source|\.)\s/.test(s) && !/^\w+=\S*$/.test(s)) ?? segments[0] ?? command
+  const words = main.split(/\s+/).filter(w => !/^\w+=/.test(w) && !/^\d?>/.test(w))
+  const head = words.slice(0, 3).join(' ')
+  return words.length > 3 || segments.length > 1 ? `${head} …` : head
+}
+
+const recentText = (item: ActivityItem) =>
+  item.kind === 'Bash' ? shortCommand(item.text) : item.kind === 'Edit' || item.kind === 'Write' ? basename(item.text) : item.text
+
 const startNext = (steps: Step[], now: number): Step[] => {
   if (steps.some(s => s.status === 'working')) return steps
   const i = steps.findIndex(s => s.status === 'pending')
   return i === -1 ? steps : steps.map((s, j) => (j === i ? { ...s, status: 'working', startedAt: now } : s))
 }
 
-const STATUS_LABEL: Record<StepStatus, string> = {
-  done: '✔ done',
-  working: '● working',
-  pending: '○ pending',
-  skipped: '– skipped',
-}
-
-const STATUS_COLOR: Record<StepStatus, string | undefined> = {
-  done: 'success',
-  working: 'claude',
-  pending: undefined,
-  skipped: undefined,
+const STEP_ICON: Record<StepStatus, string> = {
+  done: '✔',
+  working: '●',
+  pending: '○',
+  skipped: '–',
 }
 
 const stepTime = (s: Step, now: number) =>
@@ -213,7 +220,7 @@ async function handleProgress($: EngineInterface, args: ProgressArgs) {
       )
       if (status !== 'working') steps = startNext(steps, now)
       next = { ...current, steps, updatedAt: now, finishedAt: undefined }
-      recent = `${STATUS_LABEL[status]}: ${i + 1}. ${current.steps[i]!.title}`
+      recent = `${STEP_ICON[status]} ${current.steps[i]!.title}`
       break
     }
     case 'add': {
@@ -383,7 +390,7 @@ export const register: Register = on => {
     )
   })
 
-  // ── the dashboard pane ─────────────────────────────────────────────────
+  // ── the dashboard pane: a stepper timeline ─────────────────────────────
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const plan = await read($, planAtom)
@@ -406,8 +413,26 @@ export const register: Register = on => {
     const eta = etaOf(plan, now)
     const isDone = plan.finishedAt !== undefined
     const elapsed = (plan.finishedAt ?? now) - plan.startedAt
-    const barWidth = Math.max(10, Math.min(40, cols - 26))
-    const recentRoom = Math.max(0, rows - plan.steps.length - 10)
+    const barWidth = Math.max(10, Math.min(40, cols - 10))
+    const textWidth = Math.max(10, cols - 22)
+
+    const summary = isDone
+      ? `${countDone(plan)} of ${plan.steps.length} steps · done in ${fmtDur(elapsed)}`
+      : `${countDone(plan)} of ${plan.steps.length} steps · ${fmtDur(elapsed)} elapsed` +
+        (eta !== undefined ? ` · ~${fmtDur(eta)} left` : '')
+
+    // What the working step is doing right now: the last command or edit since it started.
+    const workingStep = plan.steps.find(s => s.status === 'working')
+    const lastAction = workingStep
+      ? [...activity.recent].reverse().find(r => r.at >= (workingStep.startedAt ?? 0) && r.kind !== 'Note' && r.kind !== 'Step')
+      : undefined
+    const running = lastAction ? `${lastAction.kind === 'Bash' ? 'running' : 'editing'}: ${recentText(lastAction)}` : undefined
+
+    // Fit the height: drop the connector lines first when the pane is short.
+    const recent = activity.recent.slice(-3).reverse()
+    const fixedRows = 5 + (recent.length > 0 ? recent.length + 2 : 0) + 2 + (running ? 1 : 0)
+    const hasConnectors = fixedRows + plan.steps.length * 2 + 1 <= rows
+    const stepColor = (s: Step) => (s.status === 'done' ? 'success' : s.status === 'working' ? 'claude' : undefined)
 
     return (
       <Box flexDirection="column" paddingX={1}>
@@ -417,88 +442,95 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={1}>
           <Text color={isDone ? 'success' : 'claude'}>{bar(pct, barWidth)}</Text>
           <Text bold>{pct}%</Text>
-          <Text dimColor>{isDone ? 'done' : eta !== undefined ? `ETA ~${fmtDur(eta)}` : 'ETA —'}</Text>
         </Box>
+        <Text dimColor wrap="truncate-end">
+          {summary}
+        </Text>
 
         <Box flexDirection="column" marginTop={1}>
-          <Box flexDirection="row">
-            <Box width={4} flexShrink={0}>
-              <Text dimColor>#</Text>
-            </Box>
-            <Box flexGrow={1}>
-              <Text dimColor>Step</Text>
-            </Box>
-            <Box width={12} flexShrink={0}>
-              <Text dimColor>Status</Text>
-            </Box>
-            <Box width={8} flexShrink={0}>
-              <Text dimColor>Time</Text>
-            </Box>
-          </Box>
-          {plan.steps.map((s, i) => (
-            <Box key={`step-${i}`} flexDirection="row">
-              <Box width={4} flexShrink={0}>
-                <Text dimColor>{i + 1}</Text>
-              </Box>
-              <Box flexGrow={1} flexShrink={1}>
-                <Text
-                  wrap="truncate-end"
-                  bold={s.status === 'working'}
-                  dimColor={s.status === 'pending' || s.status === 'skipped'}
-                  strikethrough={s.status === 'skipped'}
-                >
-                  {s.title}
-                </Text>
-              </Box>
-              <Box width={12} flexShrink={0}>
-                <Text color={STATUS_COLOR[s.status]} dimColor={s.status === 'pending' || s.status === 'skipped'}>
-                  {STATUS_LABEL[s.status]}
-                </Text>
-              </Box>
-              <Box width={8} flexShrink={0}>
-                <Text dimColor tabular>
-                  {stepTime(s, now)}
-                </Text>
-              </Box>
-            </Box>
-          ))}
-        </Box>
-
-        <Box marginTop={1}>
-          <Text dimColor>
-            Elapsed {fmtDur(elapsed)} · {activity.files.length} file{activity.files.length === 1 ? '' : 's'} changed ·{' '}
-            {activity.commands} command{activity.commands === 1 ? '' : 's'}
-          </Text>
-        </Box>
-
-        {recentRoom > 0 && activity.recent.length > 0 && (
-          <Box flexDirection="column">
-            <Text dimColor wrap="truncate-end">
-              {'─ Recent ' + '─'.repeat(Math.max(0, cols - 14))}
-            </Text>
-            {activity.recent
-              .slice(-recentRoom)
-              .reverse()
-              .map((item, i) => (
-                <Box key={`recent-${i}`} flexDirection="row" gap={1}>
-                  <Box width={5} flexShrink={0}>
-                    <Text dimColor tabular>
-                      {fmtClock(item.at)}
-                    </Text>
-                  </Box>
-                  <Box width={5} flexShrink={0}>
-                    <Text color={item.kind === 'Note' ? 'suggestion' : item.kind === 'Step' ? 'claude' : undefined} dimColor={item.kind === 'Bash' || item.kind === 'Edit' || item.kind === 'Write'}>
-                      {item.kind}
+          {plan.steps.map((s, i) => {
+            const isWorking = s.status === 'working'
+            const isQuiet = s.status === 'pending' || s.status === 'skipped'
+            const time = stepTime(s, now)
+            return (
+              <Box key={`step-${i}`} flexDirection="column">
+                <Box flexDirection="row">
+                  <Box width={3} flexShrink={0}>
+                    <Text color={stepColor(s)} dimColor={isQuiet}>
+                      {STEP_ICON[s.status]}
                     </Text>
                   </Box>
                   <Box flexGrow={1} flexShrink={1}>
-                    <Text wrap="truncate-end">{item.text}</Text>
+                    <Text wrap="truncate-end" bold={isWorking} dimColor={isQuiet} strikethrough={s.status === 'skipped'}>
+                      {s.title}
+                    </Text>
                   </Box>
-                  {item.isOk === false && <Text color="error">✘</Text>}
+                  <Box width={9} flexShrink={0} justifyContent="flex-end">
+                    <Text dimColor={!isWorking} color={isWorking ? 'claude' : undefined} tabular>
+                      {time === '' ? '' : isWorking ? `${time}…` : time}
+                    </Text>
+                  </Box>
                 </Box>
-              ))}
+                {isWorking && running && (
+                  <Box flexDirection="row">
+                    <Box width={3} flexShrink={0}>
+                      <Text dimColor>│</Text>
+                    </Box>
+                    <Text dimColor wrap="truncate-end">
+                      └ {clip(running, textWidth)}
+                    </Text>
+                  </Box>
+                )}
+                {hasConnectors && <Text dimColor>│</Text>}
+              </Box>
+            )
+          })}
+          <Box flexDirection="row">
+            <Box width={3} flexShrink={0}>
+              <Text color={isDone ? 'success' : undefined} dimColor={!isDone}>
+                {isDone ? '✔' : '○'}
+              </Text>
+            </Box>
+            <Text dimColor={!isDone} color={isDone ? 'success' : undefined}>
+              Done
+            </Text>
+          </Box>
+        </Box>
+
+        {recent.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>Recent</Text>
+            {recent.map((item, i) => (
+              <Box key={`recent-${i}`} flexDirection="row">
+                <Box width={7} flexShrink={0}>
+                  <Text dimColor tabular>
+                    {fmtClock(item.at)}
+                  </Text>
+                </Box>
+                <Box width={6} flexShrink={0}>
+                  <Text color={item.kind === 'Note' ? 'suggestion' : item.kind === 'Step' ? 'claude' : undefined} dimColor={item.kind !== 'Note' && item.kind !== 'Step'}>
+                    {item.kind}
+                  </Text>
+                </Box>
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text wrap="truncate-end">{clip(recentText(item), textWidth)}</Text>
+                </Box>
+                {item.isOk === false && (
+                  <Box width={2} flexShrink={0}>
+                    <Text color="error"> ✘</Text>
+                  </Box>
+                )}
+              </Box>
+            ))}
           </Box>
         )}
+
+        <Box marginTop={1}>
+          <Text dimColor wrap="truncate-end">
+            {activity.files.length} file{activity.files.length === 1 ? '' : 's'} · {activity.commands} command
+            {activity.commands === 1 ? '' : 's'}
+          </Text>
+        </Box>
       </Box>
     )
   })
