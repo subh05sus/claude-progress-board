@@ -9,7 +9,6 @@ const TOOL = 'progress'
 const TOOL_FULL = `mcp__${PLUGIN}__${TOOL}`
 const CHECK_IN_MS = 5 * 60 * 1000
 const AUTO_OPEN_MIN_STEPS = 3
-const BAND_LINGER_MS = 15 * 60 * 1000
 const TICK_MS = 2000
 const RECENT_MAX = 40
 
@@ -163,15 +162,6 @@ const stepTime = (s: Step, now: number) =>
 const addRecent = ($: EngineInterface, item: ActivityItem) =>
   update($, activityAtom, a => ({ ...a, recent: [...a.recent, item].slice(-RECENT_MAX) }))
 
-const showStatus = ($: EngineInterface, plan: Plan | null, now: number) => {
-  if (plan === null) return $.ui.status(undefined)
-  if (plan.finishedAt !== undefined) {
-    return $.ui.status(`✔ ${plan.title} · done in ${fmtDur(plan.finishedAt - plan.startedAt)}`)
-  }
-  const pct = percentOf(plan)
-  $.ui.status(`▰ ${pct}% · ${countDone(plan)}/${plan.steps.length} · ${plan.title} · ${fmtDur(now - plan.startedAt)}`)
-}
-
 const openPane = ($: EngineInterface, plan: Plan | null) =>
   $.ui.open({ id: PANE, title: plan ? `Progress · ${plan.project}` : 'Progress' })
 
@@ -254,7 +244,6 @@ async function handleProgress($: EngineInterface, args: ProgressArgs) {
   if (recent) await addRecent($, { at: now, kind: 'Step', text: recent })
   if (args.note) await addRecent($, { at: now, kind: 'Note', text: args.note.trim().slice(0, 120) })
   await update($, tickAtom, () => now)
-  showStatus($, next, now)
 
   if (args.action === 'plan' && next.steps.length >= AUTO_OPEN_MIN_STEPS) void openPane($, next)
 
@@ -290,11 +279,11 @@ export const register: Register = on => {
       if (plan === null || plan.finishedAt !== undefined) return
       const now = await $.clock.now()
       await update($, tickAtom, () => now)
-      showStatus($, plan, now)
     })
 
-    const plan = await read($, planAtom)
-    showStatus($, plan, await $.clock.now())
+    // The bar above the prompt is the one summary; clear the status-line
+    // entry earlier versions pinned under the prompt.
+    $.ui.status(undefined)
 
     return next(e)
   })
@@ -358,9 +347,8 @@ export const register: Register = on => {
     const plan = await read($, planAtom)
     await read($, tickAtom)
     const now = await $.clock.now()
-    const isStale = plan?.finishedAt !== undefined && now - plan.finishedAt > BAND_LINGER_MS
-
-    if (e.props.hasSurvey || plan === null || isStale || (await read($, bandHiddenAtom))) return next(e)
+    // A finished task's bar stays until the next plan replaces it or the person hides it.
+    if (e.props.hasSurvey || plan === null || (await read($, bandHiddenAtom))) return next(e)
 
     const { Box, Button, Text } = $.ui.resolve(e)
     const pct = percentOf(plan)

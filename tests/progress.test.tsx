@@ -110,3 +110,18 @@ test('a quiet board gets a check-in after 5 minutes, then not again right away',
   const again = await $.tool.call({ tool: 'Bash', command: 'ls' })
   expect(again.context ?? []).toHaveLength(0)
 })
+
+test('a finished task keeps its bar above the prompt, with Open and Hide, hours later', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 'Ship it', steps: [{ title: 'One' }, { title: 'Two' }] })
+  await $.tool.call({ tool: TOOL, action: 'finish' })
+  now += 5 * 60 * 60 * 1000
+
+  const ui = await $.ui.mount({ plugin: 'progress-board', component: 'AbovePrompt', props: { hasSurvey: false }, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /Ship it/ }))?.text).toBe('Ship it')
+  expect((await ui.find({ type: 'Text', text: /^100%$/ }))?.text).toBe('100%')
+  expect(await ui.find({ type: 'Button', key: 'toggle' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'hide' })).toBeDefined()
+  await ui.unmount()
+})

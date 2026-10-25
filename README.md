@@ -17,7 +17,6 @@ A live progress dashboard inside the Claude Code terminal. Instead of asking Cla
 - **Dashboard panel**: progress bar and %, steps done, elapsed time and time left, then a vertical timeline of the steps with the time each took. Under the step in progress it shows what Claude is running or editing right now. Below that, the last 3 events (notes, step changes, commands, edits), each kept to one short line, with ✘ on a failed command, and a count of files changed and commands run.
 - **Bar above the prompt**: task title, progress bar, %, steps done and elapsed time, with **Open/Close** and **Hide** buttons (click them, or press `p` / `h` once the bar has focus with `ctrl+x tab`).
 - **`/progress`**: opens or closes the dashboard any time, even while Claude is working.
-- **Status line entry** under the prompt: `▰ 62% · 3/5 · <task> · 14m`. It sits alongside any custom status line you already use.
 - **Opens by itself** when Claude starts a task with 3 or more steps, if the terminal is wide enough (about 144 columns); otherwise use the button or `/progress`.
 
 ## How the % works

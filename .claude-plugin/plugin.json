@@ -1,6 +1,6 @@
 {
   "name": "progress-board",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Live progress dashboard: % done, step table, ETA and recent activity for Claude's current task",
   "types": "./types/index.d.ts",
   "author": {
