@@ -1,0 +1,11 @@
+{
+  "name": "claude-progress-board",
+  "owner": { "name": "subh05sus", "url": "https://github.com/subh05sus" },
+  "plugins": [
+    {
+      "name": "progress-board",
+      "source": "./",
+      "description": "Live progress dashboard for Claude Code: % done, step table, ETA and recent activity for the current task"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "progress-board",
+  "version": "0.1.0",
+  "description": "Live progress dashboard: % done, step table, ETA and recent activity for Claude's current task",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "subh05sus",
+    "url": "https://github.com/subh05sus"
+  },
+  "homepage": "https://github.com/subh05sus/claude-progress-board",
+  "repository": "https://github.com/subh05sus/claude-progress-board"
+}
