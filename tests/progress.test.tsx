@@ -134,7 +134,7 @@ const engineHint = (on: Parameters<Parameters<typeof test>[1]>[1]) =>
     return <Text dimColor>? for shortcuts</Text>
   })
 
-test('the bar sits under the prompt, above the hint line, and stays after the task is done', async ($, on) => {
+test('the bar sits under the prompt, above the hint line, has no Hide button, and stays after the task is done', async ($, on) => {
   engine(on)
   engineHint(on)
   await $.session.start({ cwd: '/Users/me/projects/my-app', surface: 'terminal', isInteractive: true })
@@ -146,12 +146,12 @@ test('the bar sits under the prompt, above the hint line, and stays after the ta
   expect((await ui.find({ type: 'Text', text: /Ship it/ }))?.text).toBe('Ship it')
   expect((await ui.find({ type: 'Text', text: /^100%$/ }))?.text).toBe('100%')
   expect(await ui.find({ type: 'Button', key: 'toggle' })).toBeDefined()
-  expect(await ui.find({ type: 'Button', key: 'hide' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'hide' })).toBeUndefined()
   expect((await ui.find({ type: 'Text', text: /for shortcuts/ }))?.text).toBe('? for shortcuts')
   await ui.unmount()
 })
 
-test('Mission control lists every live session, with a button beside Open and Hide', async ($, on) => {
+test('Mission control lists every live session, with a Sessions button beside Open', async ($, on) => {
   engine(on)
   engineHint(on)
   store.set('session:other-1', { id: 'other-1', project: 'reelcut', updatedAt: now, isWorking: false, title: 'Fix export crash', pct: 30, done: 1, total: 3, startedAt: now - 60000 })
@@ -177,4 +177,84 @@ test('Mission control lists every live session, with a button beside Open and Hi
 
   // The session's own entry is in the shared store for the other sessions to read.
   expect((store.get('session:this-session') as { title?: string })?.title).toBe('Revamp gradebook')
+})
+
+const hudEngine = (on: Parameters<Parameters<typeof test>[1]>[1], git: 'none' | 'dirty') => {
+  const iso = (ms: number) => new Date(ms).toISOString()
+  on('session.usage', () => ({
+    value: {
+      startedAt: now - 48 * 60000,
+      context: { tokens: 84000, window: 200000, percent: 42 },
+      rateLimits: [
+        { kind: 'five_hour', percentUsed: 2, resetsAt: iso(now + (4 * 60 + 51) * 60000) },
+        { kind: 'seven_day', percentUsed: 23, resetsAt: iso(now + (6 * 24 + 6) * 3600000) },
+        { kind: 'spend_limit', percentUsed: 91 },
+      ],
+      cost: { usd: 16.68 },
+    },
+  }))
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('settings.read', () => ({
+    value: { modelSettings: { 'claude-opus-5-5': { effortLevel: 'high' } }, permissions: { additionalDirectories: ['/Users/me/projects/shared-ui'] } },
+  }))
+  on('ui.status', () => ({ value: undefined }))
+  on('process.run', (_, e) => {
+    const argv = e.argv as readonly string[]
+    if (argv[0] === 'sh')
+      return { value: { exitCode: 0, stdout: '{"type":"ai-title","aiTitle":"Auto-retry for mid-response connection loss"}\n', stderr: '', isStdoutTruncated: false } }
+    if (git === 'none') return { value: { exitCode: 128, stdout: '', stderr: 'not a git repository', isStdoutTruncated: false } }
+    if (argv[1] === 'branch') return { value: { exitCode: 0, stdout: 'main\n', stderr: '', isStdoutTruncated: false } }
+    return { value: { exitCode: 0, stdout: ' M hooks/register.tsx\n', stderr: '', isStdoutTruncated: false } }
+  })
+}
+
+test('the HUD shows what claude-hud showed: model, folder, name, time, cost, context and usage', async ($, on) => {
+  engine(on)
+  engineHint(on)
+  hudEngine(on, 'none')
+  await $.session.start({ cwd: '/Users/me/projects/my-app', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  const text = async (re: RegExp) => (await ui.find({ type: 'Text', text: re }))?.text
+  expect(await text(/^\[Opus[^│]*\]$/)).toBe('[Opus 5.5 ◑ high]')
+  expect(await text(/^my-app$/)).toBe('my-app')
+  expect(await text(/^Auto-retry[^│]*$/)).toBe('Auto-retry for mid-response connection loss')
+  expect(await text(/^⏱️  [^│]*$/)).toBe('⏱️  48m')
+  expect(await text(/^Cost \$[\d.]+$/)).toBe('Cost $16.68')
+  expect(await text(/^ 42%$/)).toBe(' 42%')
+  expect(await text(/^ 2%$/)).toBe(' 2%')
+  expect(await text(/^ \(resets in 4h 51m\)$/)).toBe(' (resets in 4h 51m)')
+  expect(await text(/^ 23%$/)).toBe(' 23%')
+  expect(await text(/^ \(resets in 6d 6h\)$/)).toBe(' (resets in 6d 6h)')
+  expect(await text(/^ git:/)).toBeUndefined()
+  expect(await text(/^ \+shared-ui$/)).toBe(' +shared-ui')
+  expect(await text(/^Spend $/)).toBe('Spend ')
+  expect(await text(/^ 91%$/)).toBe(' 91%')
+  // Claude Code's own hint line stays at the bottom.
+  expect(await text(/^\? for shortcuts$/)).toBe('? for shortcuts')
+  await ui.unmount()
+})
+
+test('the HUD adds the git branch, running agents and the todo in progress', async ($, on) => {
+  engine(on)
+  engineHint(on)
+  hudEngine(on, 'dirty')
+  await $.session.start({ cwd: '/Users/me/projects/my-app', surface: 'terminal', isInteractive: true })
+  await $.tool.call({
+    tool: 'TodoWrite',
+    todos: [
+      { content: 'Audit pages', status: 'completed', activeForm: 'Auditing' },
+      { content: 'Fix the gradebook table', status: 'in_progress', activeForm: 'Fixing' },
+      { content: 'Ship', status: 'pending', activeForm: 'Shipping' },
+    ],
+  })
+  await $.tool.call({ tool: 'Agent', description: 'Find the auth routes', prompt: 'x', subagent_type: 'Explore', model: 'haiku' })
+
+  const ui = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  const text = async (re: RegExp) => (await ui.find({ type: 'Text', text: re }))?.text
+  expect(await text(/^ git:\([^)]*\)$/)).toBe(' git:(main*)')
+  expect(await text(/^Explore$/)).toBe('Explore')
+  expect(await text(/^: Find the auth routes$/)).toBe(': Find the auth routes')
+  expect(await text(/^ \(1\/3\)$/)).toBe(' (1/3)')
+  await ui.unmount()
 })

@@ -49,16 +49,51 @@ export type MissionEntry = {
 
 export type SessionSelf = { id: string; project: string }
 
+// The HUD: what claude-hud showed in the status line, now drawn by the board.
+export type HudLimit = { pct: number; resetsAt?: number }
+
+export type HudAgent = {
+  id: string
+  type: string
+  description?: string
+  model?: string
+  startedAt: number
+  endedAt?: number
+}
+
+export type HudTodo = { id?: string; content: string; status: 'pending' | 'in_progress' | 'completed' }
+
+export type Hud = {
+  model?: string
+  effort?: string
+  project?: string
+  branch?: string
+  isDirty?: boolean
+  title?: string
+  startedAt?: number
+  costUsd?: number
+  contextPct?: number
+  contextTokens?: number
+  contextWindow?: number
+  lastRequestTokens?: number
+  fiveHour?: HudLimit
+  sevenDay?: HudLimit
+  spend?: HudLimit
+  addedDirs?: string[]
+  agents: HudAgent[]
+  todos: HudTodo[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'progress-board': {
       plan: Shaped<Plan | null>
       activity: Shaped<Activity>
       tick: number
-      isBandHidden: boolean
       sessions: Shaped<MissionEntry[]>
       self: Shaped<SessionSelf | null>
       isWorking: boolean
+      hud: Shaped<Hud>
     }
   }
 }

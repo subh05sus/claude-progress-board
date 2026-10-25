@@ -1,7 +1,30 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Activity, ActivityItem, MissionEntry, Plan, Step, StepStatus } from '../types'
+import type { Activity, ActivityItem, Hud, MissionEntry, Plan, Step, StepStatus } from '../types'
+import {
+  addDir,
+  addTask,
+  agentEnded,
+  agentStarted,
+  contextColor,
+  effortSymbol,
+  fmtSession,
+  fmtTokens,
+  fmtUntil,
+  fmtUsd,
+  quotaColor,
+  refreshAddedDirs,
+  refreshGit,
+  refreshModel,
+  refreshTitle,
+  refreshUsage,
+  setEffort,
+  setRequestTokens,
+  setTodos,
+  shortModel,
+  updateTask,
+} from './hud'
 
 const PLUGIN = 'progress-board'
 const PANE = 'progress'
@@ -11,6 +34,9 @@ const ALIVE_MS = 60 * 1000
 const HEARTBEAT_EVERY = 7 // ticks: ~14s
 const REFRESH_EVERY = 3 // ticks: ~6s
 const FORGET_MS = 24 * 60 * 60 * 1000
+const HUD_USAGE_EVERY = 3 // ticks: ~6s
+const HUD_GIT_EVERY = 8 // ticks: ~16s
+const HUD_TITLE_EVERY = 30 // ticks: ~60s
 const TOOL = 'progress'
 const TOOL_FULL = `mcp__${PLUGIN}__${TOOL}`
 const CHECK_IN_MS = 5 * 60 * 1000
@@ -27,10 +53,10 @@ const activityAtom = atom({ plugin: 'progress-board', key: 'activity' } as const
   shape: 'activity-1',
 })
 const tickAtom = atom({ plugin: 'progress-board', key: 'tick' } as const, 0)
-const bandHiddenAtom = atom({ plugin: 'progress-board', key: 'isBandHidden' } as const, false)
 const sessionsAtom = atom({ plugin: 'progress-board', key: 'sessions' } as const, [], { shape: 'sessions-1' })
 const selfAtom = atom({ plugin: 'progress-board', key: 'self' } as const, null, { shape: 'self-1' })
 const workingAtom = atom({ plugin: 'progress-board', key: 'isWorking' } as const, false)
+const hudAtom = atom({ plugin: 'progress-board', key: 'hud' } as const, { agents: [], todos: [] } as Hud, { shape: 'hud-1' })
 
 type Action = 'plan' | 'start' | 'done' | 'skip' | 'add' | 'note' | 'finish'
 
@@ -258,7 +284,6 @@ async function handleProgress($: EngineInterface, args: ProgressArgs) {
         updatedAt: now,
       }
       await update($, activityAtom, () => EMPTY_ACTIVITY)
-      await update($, bandHiddenAtom, () => false)
       recent = `Plan: ${next.title} (${steps.length} steps)`
       break
     }
@@ -329,6 +354,164 @@ async function handleProgress($: EngineInterface, args: ProgressArgs) {
   return { result: `Progress ${pct}% (${countDone(next)}/${next.steps.length} steps). ${tail}` }
 }
 
+// ── the HUD lines, drawn as claude-hud drew its status line ─────────────────
+
+type Ui = ReturnType<EngineInterface['ui']['resolve']>
+
+const HUD_BAR = 10
+const MAX_AGENTS = 3
+const AGENT_LINGER_MS = 60 * 1000
+
+const agentElapsed = (ms: number) => {
+  if (ms < 1000) return '<1s'
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
+  const secs = Math.floor(ms / 1000)
+  const mins = Math.floor(secs / 60)
+  return mins < 60 ? `${mins}m ${secs % 60}s` : `${Math.floor(mins / 60)}h ${mins % 60}m`
+}
+
+function drawHud(Box: Ui['Box'], Text: Ui['Text'], hud: Hud, now: number) {
+  const sep = (thin = false) => <Text dimColor>{thin ? ' | ' : ' │ '}</Text>
+  const joined = (parts: Array<RenderChildren | false | undefined>, thin = false): RenderChildren[] =>
+    parts.filter((p): p is RenderChildren => Boolean(p)).flatMap((part, i) => (i === 0 ? [part] : [sep(thin), part]))
+  const meter = (pct: number, color: string) => {
+    const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * HUD_BAR)
+    return [<Text color={color}>{'█'.repeat(filled)}</Text>, <Text dimColor>{'░'.repeat(HUD_BAR - filled)}</Text>]
+  }
+  const resets = (resetsAt: number | undefined) =>
+    resetsAt !== undefined && resetsAt > now ? <Text dimColor> (resets in {fmtUntil(resetsAt - now)})</Text> : null
+
+  // Line 1: [Opus 5.5 ◑ high] │ folder git:(main*) │ session name │ ⏱️  48m │ Cost $16.68
+  const effort = hud.effort ? ` ${[effortSymbol(hud.effort), hud.effort].filter(Boolean).join(' ')}` : ''
+  const line1 = joined([
+    hud.model !== undefined && <Text color="cyan">[{hud.model}{effort}]</Text>,
+    hud.project !== undefined && (
+      <Text>
+        <Text color="yellow">{hud.project}</Text>
+        {hud.branch !== undefined && (
+          <Text color="magenta">
+            {' '}git:({hud.branch}
+            {hud.isDirty ? '*' : ''})
+          </Text>
+        )}
+        {(hud.addedDirs ?? []).slice(0, 5).map(dir => (
+          <Text dimColor> +{dir}</Text>
+        ))}
+        {(hud.addedDirs ?? []).length > 5 && <Text dimColor> +{(hud.addedDirs ?? []).length - 5} more</Text>}
+      </Text>
+    ),
+    hud.title !== undefined && (
+      <Text dimColor wrap="truncate-end">
+        {hud.title}
+      </Text>
+    ),
+    hud.startedAt !== undefined && <Text dimColor>⏱️  {fmtSession(now - hud.startedAt)}</Text>,
+    hud.costUsd !== undefined && <Text dimColor>Cost {fmtUsd(hud.costUsd)}</Text>,
+  ])
+
+  // Line 2: Context ████░░░░░░ 42% │ Usage ░░░░░░░░░░ 2% (resets in 4h 51m) | Weekly ██░░░░░░░░ 23% (resets in 6d 6h)
+  const ctx = hud.contextPct
+  const context =
+    ctx !== undefined && (
+      <Text>
+        <Text dimColor>Context </Text>
+        {meter(ctx, contextColor(ctx))}
+        <Text color={contextColor(ctx)}> {ctx}%</Text>
+        {ctx >= 85 && hud.contextTokens !== undefined && hud.contextWindow !== undefined && (
+          <Text dimColor>
+            {' '}({fmtTokens(hud.contextTokens)}/{fmtTokens(hud.contextWindow)})
+          </Text>
+        )}
+      </Text>
+    )
+  const { fiveHour, sevenDay } = hud
+  const limitHit = fiveHour?.pct === 100 ? fiveHour : sevenDay?.pct === 100 ? sevenDay : undefined
+  const usage = limitHit
+    ? [
+        <Text>
+          <Text dimColor>Usage </Text>
+          <Text color="red">⚠ Limit reached</Text>
+          {resets(limitHit.resetsAt)}
+        </Text>,
+      ]
+    : [
+        fiveHour && (
+          <Text>
+            <Text dimColor>Usage </Text>
+            {meter(fiveHour.pct, quotaColor(fiveHour.pct))}
+            <Text color={quotaColor(fiveHour.pct)}> {fiveHour.pct}%</Text>
+            {resets(fiveHour.resetsAt)}
+          </Text>
+        ),
+        sevenDay && (
+          <Text>
+            <Text dimColor>Weekly </Text>
+            {meter(sevenDay.pct, quotaColor(sevenDay.pct))}
+            <Text color={quotaColor(sevenDay.pct)}> {sevenDay.pct}%</Text>
+            {resets(sevenDay.resetsAt)}
+          </Text>
+        ),
+        hud.spend && (
+          <Text>
+            <Text dimColor>Spend </Text>
+            {meter(hud.spend.pct, quotaColor(hud.spend.pct))}
+            <Text color={quotaColor(hud.spend.pct)}> {hud.spend.pct}%</Text>
+            {resets(hud.spend.resetsAt)}
+          </Text>
+        ),
+      ]
+  const usageParts = usage.filter(Boolean)
+  const line2 = joined([context, usageParts.length > 0 && <Text>{joined(usageParts, true)}</Text>])
+
+  // Agents: running ones first, then those that finished in the last minute.
+  const running = hud.agents.filter(a => a.endedAt === undefined).slice(-MAX_AGENTS)
+  const recent = hud.agents
+    .filter(a => a.endedAt !== undefined && now - a.endedAt <= AGENT_LINGER_MS)
+    .slice(-Math.min(2, MAX_AGENTS - running.length))
+  const agents = [...running, ...(running.length < MAX_AGENTS ? recent : [])]
+
+  // Todos: the one in progress, or all done.
+  const done = hud.todos.filter(t => t.status === 'completed').length
+  const current = hud.todos.find(t => t.status === 'in_progress')
+
+  return (
+    <Box flexDirection="column">
+      {line1.length > 0 && <Text wrap="truncate-end">{line1}</Text>}
+      {line2.length > 0 && <Text wrap="truncate-end">{line2}</Text>}
+      {agents.map(a => {
+        const model = shortModel(a.model)
+        return (
+          <Text key={`agent-${a.id}`} wrap="truncate-end">
+            {a.endedAt === undefined ? <Text color="yellow">◐</Text> : <Text color="green">✓</Text>}{' '}
+            <Text color="magenta">{a.type}</Text>
+            {model && <Text dimColor> [{model}]</Text>}
+            {a.description && <Text dimColor>: {a.description.slice(0, 40)}</Text>}
+            <Text dimColor> ({agentElapsed((a.endedAt ?? now) - a.startedAt)})</Text>
+          </Text>
+        )
+      })}
+      {current ? (
+        <Text wrap="truncate-end">
+          <Text color="yellow">▸</Text> {current.content.slice(0, 50)}
+          <Text dimColor>
+            {' '}({done}/{hud.todos.length})
+          </Text>
+        </Text>
+      ) : (
+        hud.todos.length > 0 &&
+        done === hud.todos.length && (
+          <Text>
+            <Text color="green">✓</Text> All todos complete
+            <Text dimColor>
+              {' '}({done}/{hud.todos.length})
+            </Text>
+          </Text>
+        )
+      )}
+    </Box>
+  )
+}
+
 export const register: Register = on => {
   let lastNudgeAt = 0
   let ticks = 0
@@ -359,6 +542,9 @@ export const register: Register = on => {
       ticks += 1
       if (ticks % HEARTBEAT_EVERY === 0) await publishSelf($)
       if (ticks % REFRESH_EVERY === 0) await refreshSessions($)
+      if (ticks % HUD_USAGE_EVERY === 0) await refreshUsage($)
+      if (ticks % HUD_GIT_EVERY === 0) await refreshGit($)
+      if (ticks % HUD_TITLE_EVERY === 0) await refreshTitle($)
       const plan = await read($, planAtom)
       if (plan === null || plan.finishedAt !== undefined) return
       const now = await $.clock.now()
@@ -370,8 +556,23 @@ export const register: Register = on => {
     $.ui.status(undefined)
     await publishSelf($)
     await refreshSessions($)
+    await Promise.allSettled([refreshModel($), refreshUsage($), refreshGit($), refreshTitle($), refreshAddedDirs($)])
 
     return next(e)
+  })
+
+  // A folder added with /add-dir joins the HUD's folder part.
+  on('classic.DirectoryAdded', async ($, e, next) => {
+    await addDir($, e.directory)
+    return next(e)
+  })
+
+  // The effort each main-loop request is sent with, for the HUD's model badge.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined) await setEffort($, e.effort)
+    const result = yield* next(e)
+    if (e.agentId === undefined && result.usage) await setRequestTokens($, result.usage)
+    return result
   })
 
   // Working or waiting, as Mission control shows it.
@@ -382,7 +583,10 @@ export const register: Register = on => {
 
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
-    if (e.agentId === undefined) await setWorking($, false)
+    if (e.agentId === undefined) {
+      await setWorking($, false)
+      await Promise.allSettled([refreshModel($), refreshUsage($), refreshGit($), refreshTitle($)])
+    }
     return done
   })
 
@@ -423,7 +627,30 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     if (e.tool === TOOL_FULL) return handleProgress($, e as unknown as ProgressArgs)
 
+    // Agents and todos for the HUD, whether or not a plan is on the board.
+    const agentId = e.tool === 'Agent' ? (e.tool_use_id ?? `agent-${await $.clock.now()}`) : undefined
+    if (e.tool === 'Agent' && agentId) {
+      await agentStarted($, {
+        id: agentId,
+        type: e.subagent_type ?? 'agent',
+        description: e.description,
+        model: e.model,
+        startedAt: await $.clock.now(),
+      })
+    } else if (e.tool === 'TodoWrite') {
+      await setTodos($, e.todos.map(t => ({ content: t.content, status: t.status })))
+    }
+
     const ran = await next(e)
+
+    if (agentId) await agentEnded($, agentId, await $.clock.now())
+    if (e.tool === 'TaskCreate' && ran.deny === undefined && ran.isError !== true) {
+      const id = (ran.result as { task?: { id?: string } } | undefined)?.task?.id
+      await addTask($, { id, content: e.subject, status: 'pending' })
+    } else if (e.tool === 'TaskUpdate' && ran.deny === undefined && ran.isError !== true) {
+      await updateTask($, e.taskId, e.status, e.subject)
+    }
+
     const plan = await read($, planAtom)
     if (plan === null || plan.finishedAt !== undefined) return ran
 
@@ -460,16 +687,18 @@ export const register: Register = on => {
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const plan = await read($, planAtom)
     const sessions = await read($, sessionsAtom)
-    const isHidden = await read($, bandHiddenAtom)
+    const hud = await read($, hudAtom)
     await read($, tickAtom)
     const engineLine = await next(e)
 
-    const showsPlan = plan !== null && !isHidden
+    // The bar shows whenever there is a task, a finished one included. Earlier
+    // versions had a Hide button; the flag it stored is no longer read.
+    const showsPlan = plan !== null
     const showsSessions = sessions.length > 1
-    if (!showsPlan && !showsSessions) return engineLine
 
     const { Box, Button, Text } = $.ui.resolve(e)
     const now = await $.clock.now()
+    const hudLines = drawHud(Box, Text, hud, now)
     const isOpen = await isPaneOpen($)
     const isMissionOpen = await isPaneOpen($, MISSION)
     const width = Math.max(8, Math.min(20, Math.floor(((e.viewport?.columns ?? 100) - 80) / 2)))
@@ -477,6 +706,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
+        {(showsPlan || showsSessions) && (
         <Box flexDirection="row" gap={1}>
           {showsPlan && plan !== null && (
             <Box flexDirection="row" gap={1} flexShrink={1}>
@@ -495,7 +725,6 @@ export const register: Register = on => {
                 hotkey="p"
                 onPress={() => (isOpen ? $.ui.close({ id: PANE }) : openPane($, plan))}
               />
-              <Button key="hide" label="Hide" hotkey="h" onPress={() => update($, bandHiddenAtom, () => true)} />
             </Box>
           )}
           <Button
@@ -509,6 +738,8 @@ export const register: Register = on => {
             }}
           />
         </Box>
+        )}
+        {hudLines}
         {engineLine}
       </Box>
     )

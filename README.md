@@ -2,7 +2,7 @@
 
 A live progress dashboard inside the Claude Code terminal. Instead of asking Claude "how far along are you?" again and again, and getting the answer in a different format every time, you watch one panel that always looks the same and updates as Claude works.
 
-**The bar under the prompt**: task, progress, steps done and elapsed time, with buttons to open the dashboard, hide the bar, or open Mission control.
+**The bar under the prompt**: task, progress, steps done and elapsed time, with buttons to open the dashboard or Mission control. Below it, a status HUD: model and effort, folder and git branch, session name, time, cost, context and plan usage.
 
 ![Progress bar under the Claude Code prompt](docs/progress-bar.png)
 
@@ -15,7 +15,11 @@ A live progress dashboard inside the Claude Code terminal. Instead of asking Cla
 ## What you get
 
 - **Dashboard panel**: progress bar and %, steps done, elapsed time and time left, then a vertical timeline of the steps with the time each took. Under the step in progress it shows what Claude is running or editing right now. Below that, the last 3 events (notes, step changes, commands, edits), each kept to one short line, with ✘ on a failed command, and a count of files changed and commands run.
-- **Bar under the prompt**, just above Claude Code's own hint line: task title, progress bar, %, steps done and elapsed time, with **Open/Close**, **Hide** and **Sessions** buttons. A finished task's bar stays until the next task or until you press Hide.
+- **Bar under the prompt**, just above Claude Code's own hint line: task title, progress bar, %, steps done and elapsed time, with **Open/Close** and **Sessions** buttons. It shows whenever there's a task, and a finished task's bar stays until the next task starts.
+- **Status HUD**, under the bar (no status line setup needed):
+  - `[Opus 5.5 ◑ high] │ my-app git:(main*) │ <session name> │ ⏱️  48m │ Cost $16.68`: model and effort, folder (plus folders added with `/add-dir`), git branch with `*` when there are changes, the session's name, time and cost.
+  - `Context ████░░░░░░ 42% │ Usage ░░░░░░░░░░ 2% (resets in 4h 51m) | Weekly ██░░░░░░░░ 23% (resets in 6d 6h)`: context used (yellow from 70%, red from 85%, with the token count shown from 85%), and your plan's 5-hour and weekly limits with their reset times (a spend limit too, on a gateway). At a limit it reads `⚠ Limit reached`.
+  - Running subagents (`◐ Explore [haiku-4.5]: Find the auth routes (12s)`) and the todo in progress (`▸ Fix the table (1/3)`) when there are any.
 - **Mission control**: the **Sessions** button (or `/sessions`) opens a panel listing every open Claude Code session on your computer: project, current task, progress, the step it's on, and whether it's working, waiting for you, done or idle. Each session shares its state through the plugin's own store, so nothing leaves your machine.
 - **`/progress`**: opens or closes the dashboard any time, even while Claude is working.
 - **Opens by itself** when Claude starts a task with 3 or more steps, if the terminal is wide enough (about 144 columns); otherwise use the button or `/progress`.
