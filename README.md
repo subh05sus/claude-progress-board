@@ -2,25 +2,15 @@
 
 A live progress dashboard inside the Claude Code terminal. Instead of asking Claude "how far along are you?" again and again, and getting the answer in a different format every time, you watch one panel that always looks the same and updates as Claude works.
 
-```
-╭─ Progress · my-app ──────────────────────────────────╮
-│ Revamp settings page                                 │
-│ ██████████████████░░░░░░░░░░░░  62%   ETA ~14m       │
-│                                                      │
-│  #  Step                         Status      Time    │
-│  1  Audit current pages          ✔ done      4m 10s  │
-│  2  Fix auth on settings routes  ✔ done      6m 02s  │
-│  3  New settings form            ● working   3m 40s  │
-│  4  Bulk actions + export        ○ pending           │
-│  5  Type-check, lint, build      ○ pending           │
-│                                                      │
-│  Elapsed 14m 52s · 9 files changed · 23 commands     │
-│  ─ Recent ─────────────────────────────────────────  │
-│  12:41  Edit  app/settings/form.tsx                  │
-│  12:40  Bash  pnpm tsc --noEmit                      │
-│  12:38  Note  Moved filters into the toolbar         │
-╰──────────────────────────────────────────────────────╯
-```
+**The bar above the prompt**: task, progress, steps done and elapsed time, with buttons to open the dashboard or hide the bar.
+
+![Progress bar above the Claude Code prompt](docs/progress-bar.png)
+
+**The dashboard panel**: progress bar, step table with status and time per step, live stats and a recent-activity feed.
+
+<p align="center">
+  <img src="docs/dashboard.png" alt="Progress dashboard panel in the Claude Code terminal" width="480">
+</p>
 
 ## What you get
 

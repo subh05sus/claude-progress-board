@@ -422,22 +422,22 @@ export const register: Register = on => {
 
         <Box flexDirection="column" marginTop={1}>
           <Box flexDirection="row">
-            <Box width={4}>
+            <Box width={4} flexShrink={0}>
               <Text dimColor>#</Text>
             </Box>
             <Box flexGrow={1}>
               <Text dimColor>Step</Text>
             </Box>
-            <Box width={12}>
+            <Box width={12} flexShrink={0}>
               <Text dimColor>Status</Text>
             </Box>
-            <Box width={8}>
+            <Box width={8} flexShrink={0}>
               <Text dimColor>Time</Text>
             </Box>
           </Box>
           {plan.steps.map((s, i) => (
             <Box key={`step-${i}`} flexDirection="row">
-              <Box width={4}>
+              <Box width={4} flexShrink={0}>
                 <Text dimColor>{i + 1}</Text>
               </Box>
               <Box flexGrow={1} flexShrink={1}>
@@ -450,12 +450,12 @@ export const register: Register = on => {
                   {s.title}
                 </Text>
               </Box>
-              <Box width={12}>
+              <Box width={12} flexShrink={0}>
                 <Text color={STATUS_COLOR[s.status]} dimColor={s.status === 'pending' || s.status === 'skipped'}>
                   {STATUS_LABEL[s.status]}
                 </Text>
               </Box>
-              <Box width={8}>
+              <Box width={8} flexShrink={0}>
                 <Text dimColor tabular>
                   {stepTime(s, now)}
                 </Text>
@@ -473,16 +473,20 @@ export const register: Register = on => {
 
         {recentRoom > 0 && activity.recent.length > 0 && (
           <Box flexDirection="column">
-            <Text dimColor>{'─ Recent ' + '─'.repeat(Math.max(0, cols - 14))}</Text>
+            <Text dimColor wrap="truncate-end">
+              {'─ Recent ' + '─'.repeat(Math.max(0, cols - 14))}
+            </Text>
             {activity.recent
               .slice(-recentRoom)
               .reverse()
               .map((item, i) => (
                 <Box key={`recent-${i}`} flexDirection="row" gap={1}>
-                  <Text dimColor tabular>
-                    {fmtClock(item.at)}
-                  </Text>
-                  <Box width={5}>
+                  <Box width={5} flexShrink={0}>
+                    <Text dimColor tabular>
+                      {fmtClock(item.at)}
+                    </Text>
+                  </Box>
+                  <Box width={5} flexShrink={0}>
                     <Text color={item.kind === 'Note' ? 'suggestion' : item.kind === 'Step' ? 'claude' : undefined} dimColor={item.kind === 'Bash' || item.kind === 'Edit' || item.kind === 'Write'}>
                       {item.kind}
                     </Text>
