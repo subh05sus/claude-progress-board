@@ -32,6 +32,23 @@ export type Activity = {
   recent: ActivityItem[]
 }
 
+// One open session as Mission control lists it, shared across sessions in $.store.
+export type MissionEntry = {
+  id: string
+  project: string
+  updatedAt: number
+  isWorking: boolean
+  title?: string
+  pct?: number
+  done?: number
+  total?: number
+  step?: number
+  startedAt?: number
+  finishedAt?: number
+}
+
+export type SessionSelf = { id: string; project: string }
+
 declare module 'claude-code' {
   interface PluginState {
     'progress-board': {
@@ -39,6 +56,9 @@ declare module 'claude-code' {
       activity: Shaped<Activity>
       tick: number
       isBandHidden: boolean
+      sessions: Shaped<MissionEntry[]>
+      self: Shaped<SessionSelf | null>
+      isWorking: boolean
     }
   }
 }

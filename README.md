@@ -2,9 +2,9 @@
 
 A live progress dashboard inside the Claude Code terminal. Instead of asking Claude "how far along are you?" again and again, and getting the answer in a different format every time, you watch one panel that always looks the same and updates as Claude works.
 
-**The bar above the prompt**: task, progress, steps done and elapsed time, with buttons to open the dashboard or hide the bar.
+**The bar under the prompt**: task, progress, steps done and elapsed time, with buttons to open the dashboard, hide the bar, or open Mission control.
 
-![Progress bar above the Claude Code prompt](docs/progress-bar.png)
+![Progress bar under the Claude Code prompt](docs/progress-bar.png)
 
 **The dashboard panel**: a step-by-step timeline with progress, time per step, what Claude is running right now, and the last 3 events.
 
@@ -15,7 +15,8 @@ A live progress dashboard inside the Claude Code terminal. Instead of asking Cla
 ## What you get
 
 - **Dashboard panel**: progress bar and %, steps done, elapsed time and time left, then a vertical timeline of the steps with the time each took. Under the step in progress it shows what Claude is running or editing right now. Below that, the last 3 events (notes, step changes, commands, edits), each kept to one short line, with ✘ on a failed command, and a count of files changed and commands run.
-- **Bar above the prompt**: task title, progress bar, %, steps done and elapsed time, with **Open/Close** and **Hide** buttons (click them, or press `p` / `h` once the bar has focus with `ctrl+x tab`).
+- **Bar under the prompt**, just above Claude Code's own hint line: task title, progress bar, %, steps done and elapsed time, with **Open/Close**, **Hide** and **Sessions** buttons. A finished task's bar stays until the next task or until you press Hide.
+- **Mission control**: the **Sessions** button (or `/sessions`) opens a panel listing every open Claude Code session on your computer: project, current task, progress, the step it's on, and whether it's working, waiting for you, done or idle. Each session shares its state through the plugin's own store, so nothing leaves your machine.
 - **`/progress`**: opens or closes the dashboard any time, even while Claude is working.
 - **Opens by itself** when Claude starts a task with 3 or more steps, if the terminal is wide enough (about 144 columns); otherwise use the button or `/progress`.
 

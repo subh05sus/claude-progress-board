@@ -18,7 +18,22 @@ const PANE = {
 
 let now = Date.UTC(2026, 9, 25, 10, 0, 0)
 
+// The store all sessions share, in memory.
+const store = new Map<string, unknown>()
+
 const engine = (on: Parameters<Parameters<typeof test>[1]>[1]) => {
+  store.clear()
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, JSON.parse(JSON.stringify(e.value)))
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('session.id', () => ({ value: 'this-session' }))
   on('clock.now', () => ({ value: now }))
   on('clock.every', () => ({ value: undefined }))
   on('tool.register', (_, e) => ({ value: { tool: `mcp__progress-board__${e.name}` } }))
@@ -111,17 +126,55 @@ test('a quiet board gets a check-in after 5 minutes, then not again right away',
   expect(again.context ?? []).toHaveLength(0)
 })
 
-test('a finished task keeps its bar above the prompt, with Open and Hide, hours later', async ($, on) => {
+const HINT = { plugin: 'progress-board', component: 'PromptHint', props: { isDraft: false, isWorking: false, hint: '? for shortcuts' } } as const
+
+const engineHint = (on: Parameters<Parameters<typeof test>[1]>[1]) =>
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text dimColor>? for shortcuts</Text>
+  })
+
+test('the bar sits under the prompt, above the hint line, and stays after the task is done', async ($, on) => {
   engine(on)
-  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  engineHint(on)
+  await $.session.start({ cwd: '/Users/me/projects/my-app', surface: 'terminal', isInteractive: true })
   await $.tool.call({ tool: TOOL, action: 'plan', title: 'Ship it', steps: [{ title: 'One' }, { title: 'Two' }] })
   await $.tool.call({ tool: TOOL, action: 'finish' })
   now += 5 * 60 * 60 * 1000
 
-  const ui = await $.ui.mount({ plugin: 'progress-board', component: 'AbovePrompt', props: { hasSurvey: false }, surface: 'terminal' })
+  const ui = await $.ui.mount({ ...HINT, surface: 'terminal' })
   expect((await ui.find({ type: 'Text', text: /Ship it/ }))?.text).toBe('Ship it')
   expect((await ui.find({ type: 'Text', text: /^100%$/ }))?.text).toBe('100%')
   expect(await ui.find({ type: 'Button', key: 'toggle' })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'hide' })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /for shortcuts/ }))?.text).toBe('? for shortcuts')
   await ui.unmount()
+})
+
+test('Mission control lists every live session, with a button beside Open and Hide', async ($, on) => {
+  engine(on)
+  engineHint(on)
+  store.set('session:other-1', { id: 'other-1', project: 'reelcut', updatedAt: now, isWorking: false, title: 'Fix export crash', pct: 30, done: 1, total: 3, startedAt: now - 60000 })
+  store.set('session:other-2', { id: 'other-2', project: 'claude-hud', updatedAt: now, isWorking: true, title: 'Add sparkline', pct: 88, done: 7, total: 8, step: 8, startedAt: now - 6 * 60000 })
+  store.set('session:gone', { id: 'gone', project: 'old', updatedAt: now - 10 * 60000, isWorking: false })
+
+  await $.session.start({ cwd: '/Users/me/projects/my-app', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: TOOL, action: 'plan', title: 'Revamp gradebook', steps: [{ title: 'A' }, { title: 'B' }, { title: 'C' }] })
+
+  const hint = await $.ui.mount({ ...HINT, surface: 'terminal' })
+  expect(await hint.find({ type: 'Button', key: 'toggle' })).toBeDefined()
+  expect(await hint.find({ type: 'Button', key: 'sessions' })).toBeDefined()
+  await hint.unmount()
+
+  const ui = await $.ui.mount({ plugin: 'progress-board', component: 'Pane', requestId: 'mission', props: { ...PANE.props, title: 'Mission control', bodyColumns: 100 }, surface: 'terminal' })
+  expect((await ui.find({ type: 'Text', text: /working ·|waiting/ }))?.text).toBe('1 working · 2 waiting')
+  expect((await ui.find({ type: 'Text', text: /^reelcut$/ }))?.text).toBe('reelcut')
+  expect((await ui.find({ type: 'Text', text: /Add sparkline/ }))?.text).toBe('Add sparkline')
+  expect((await ui.find({ type: 'Text', text: /step 8\/8/ }))?.text).toBe('step 8/8 · 6m 00s')
+  expect((await ui.find({ type: 'Text', text: /waiting for you · this/ }))?.text).toBe('waiting for you · this')
+  expect(await ui.find({ type: 'Text', text: /^old$/ })).toBeUndefined()
+  await ui.unmount()
+
+  // The session's own entry is in the shared store for the other sessions to read.
+  expect((store.get('session:this-session') as { title?: string })?.title).toBe('Revamp gradebook')
 })

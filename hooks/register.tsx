@@ -1,10 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Activity, ActivityItem, Plan, Step, StepStatus } from '../types'
+import type { Activity, ActivityItem, MissionEntry, Plan, Step, StepStatus } from '../types'
 
 const PLUGIN = 'progress-board'
 const PANE = 'progress'
+const MISSION = 'mission'
+const STORE_PREFIX = 'session:'
+const ALIVE_MS = 60 * 1000
+const HEARTBEAT_EVERY = 7 // ticks: ~14s
+const REFRESH_EVERY = 3 // ticks: ~6s
+const FORGET_MS = 24 * 60 * 60 * 1000
 const TOOL = 'progress'
 const TOOL_FULL = `mcp__${PLUGIN}__${TOOL}`
 const CHECK_IN_MS = 5 * 60 * 1000
@@ -22,6 +28,9 @@ const activityAtom = atom({ plugin: 'progress-board', key: 'activity' } as const
 })
 const tickAtom = atom({ plugin: 'progress-board', key: 'tick' } as const, 0)
 const bandHiddenAtom = atom({ plugin: 'progress-board', key: 'isBandHidden' } as const, false)
+const sessionsAtom = atom({ plugin: 'progress-board', key: 'sessions' } as const, [], { shape: 'sessions-1' })
+const selfAtom = atom({ plugin: 'progress-board', key: 'self' } as const, null, { shape: 'self-1' })
+const workingAtom = atom({ plugin: 'progress-board', key: 'isWorking' } as const, false)
 
 type Action = 'plan' | 'start' | 'done' | 'skip' | 'add' | 'note' | 'finish'
 
@@ -165,7 +174,69 @@ const addRecent = ($: EngineInterface, item: ActivityItem) =>
 const openPane = ($: EngineInterface, plan: Plan | null) =>
   $.ui.open({ id: PANE, title: plan ? `Progress · ${plan.project}` : 'Progress' })
 
-const isPaneOpen = async ($: EngineInterface) => (await $.ui.panes()).some(p => p.id === PANE)
+const isPaneOpen = async ($: EngineInterface, id = PANE) => (await $.ui.panes()).some(p => p.id === id)
+
+const openMission = ($: EngineInterface) => $.ui.open({ id: MISSION, title: 'Mission control' })
+
+// ── Mission control: every open session publishes itself to the shared store ──
+
+type MissionStatus = 'working' | 'waiting' | 'done' | 'idle'
+
+const statusOf = (s: MissionEntry): MissionStatus =>
+  s.isWorking ? 'working' : s.title === undefined ? 'idle' : s.finishedAt === undefined ? 'waiting' : 'done'
+
+const STATUS_ORDER: Record<MissionStatus, number> = { working: 0, waiting: 1, done: 2, idle: 3 }
+
+const MISSION_ICON: Record<MissionStatus, string> = { working: '●', waiting: '◐', done: '✔', idle: '○' }
+const MISSION_COLOR: Record<MissionStatus, string | undefined> = {
+  working: 'claude',
+  waiting: 'warning',
+  done: 'success',
+  idle: undefined,
+}
+
+async function publishSelf($: EngineInterface) {
+  const self = await read($, selfAtom)
+  if (self === null) return
+  const plan = await read($, planAtom)
+  const working = plan ? plan.steps.findIndex(s => s.status === 'working') : -1
+  const entry: MissionEntry = {
+    id: self.id,
+    project: self.project,
+    updatedAt: await $.clock.now(),
+    isWorking: await read($, workingAtom),
+    ...(plan && {
+      title: plan.title,
+      pct: percentOf(plan),
+      done: countDone(plan),
+      total: plan.steps.length,
+      step: working === -1 ? undefined : working + 1,
+      startedAt: plan.startedAt,
+      finishedAt: plan.finishedAt,
+    }),
+  }
+  await $.store.set(STORE_PREFIX + self.id, entry)
+}
+
+async function refreshSessions($: EngineInterface) {
+  const now = await $.clock.now()
+  const live: MissionEntry[] = []
+  for (const key of await $.store.keys()) {
+    if (!key.startsWith(STORE_PREFIX)) continue
+    const entry = (await $.store.get(key)) as MissionEntry | undefined
+    if (!entry || typeof entry.updatedAt !== 'number') continue
+    if (now - entry.updatedAt > FORGET_MS) await $.store.delete(key)
+    else if (now - entry.updatedAt <= ALIVE_MS) live.push(entry)
+  }
+  live.sort((a, b) => STATUS_ORDER[statusOf(a)] - STATUS_ORDER[statusOf(b)] || a.project.localeCompare(b.project))
+  await update($, sessionsAtom, () => live)
+}
+
+async function setWorking($: EngineInterface, isWorking: boolean) {
+  await update($, workingAtom, () => isWorking)
+  await publishSelf($)
+  await refreshSessions($)
+}
 
 async function handleProgress($: EngineInterface, args: ProgressArgs) {
   const now = await $.clock.now()
@@ -244,6 +315,7 @@ async function handleProgress($: EngineInterface, args: ProgressArgs) {
   if (recent) await addRecent($, { at: now, kind: 'Step', text: recent })
   if (args.note) await addRecent($, { at: now, kind: 'Note', text: args.note.trim().slice(0, 120) })
   await update($, tickAtom, () => now)
+  await publishSelf($)
 
   if (args.action === 'plan' && next.steps.length >= AUTO_OPEN_MIN_STEPS) void openPane($, next)
 
@@ -259,8 +331,17 @@ async function handleProgress($: EngineInterface, args: ProgressArgs) {
 
 export const register: Register = on => {
   let lastNudgeAt = 0
+  let ticks = 0
 
   on('session.start', async ($, e, next) => {
+    const id = await $.session.id()
+    await update($, selfAtom, () => ({ id, project: basename(e.cwd) }))
+    await update($, workingAtom, () => false)
+    await $.command.register({
+      name: 'sessions',
+      description: 'Open or close Mission control: every open Claude session and its progress',
+      immediate: true,
+    })
     await $.tool.register({
       name: TOOL,
       description:
@@ -275,17 +356,50 @@ export const register: Register = on => {
     })
 
     $.clock.every(TICK_MS, async () => {
+      ticks += 1
+      if (ticks % HEARTBEAT_EVERY === 0) await publishSelf($)
+      if (ticks % REFRESH_EVERY === 0) await refreshSessions($)
       const plan = await read($, planAtom)
       if (plan === null || plan.finishedAt !== undefined) return
       const now = await $.clock.now()
       await update($, tickAtom, () => now)
     })
 
-    // The bar above the prompt is the one summary; clear the status-line
-    // entry earlier versions pinned under the prompt.
+    // The bar under the prompt is the one summary; clear the status-line
+    // entry earlier versions pinned there.
     $.ui.status(undefined)
+    await publishSelf($)
+    await refreshSessions($)
 
     return next(e)
+  })
+
+  // Working or waiting, as Mission control shows it.
+  on('prompt.submit', async ($, e, next) => {
+    await setWorking($, true)
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (e.agentId === undefined) await setWorking($, false)
+    return done
+  })
+
+  on('session.end', async ($, e, next) => {
+    const self = await read($, selfAtom)
+    if (self !== null) await $.store.delete(STORE_PREFIX + self.id)
+    return next(e)
+  })
+
+  on('command.run', { command: 'sessions' }, async $ => {
+    if (await isPaneOpen($, MISSION)) {
+      await $.ui.close({ id: MISSION })
+      return { text: 'Mission control closed.' }
+    }
+    await refreshSessions($)
+    const opened = await openMission($)
+    return { text: opened.isPlaced ? 'Mission control opened.' : `Mission control is waiting: ${opened.reason}` }
   })
 
   // Tell the model how to use the board, only where it has the tool.
@@ -342,38 +456,138 @@ export const register: Register = on => {
     return ran
   })
 
-  // ── the band above the prompt ──────────────────────────────────────────
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+  // ── the bar under the prompt, above the engine's hint line ─────────────
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const plan = await read($, planAtom)
+    const sessions = await read($, sessionsAtom)
+    const isHidden = await read($, bandHiddenAtom)
     await read($, tickAtom)
-    const now = await $.clock.now()
-    // A finished task's bar stays until the next plan replaces it or the person hides it.
-    if (e.props.hasSurvey || plan === null || (await read($, bandHiddenAtom))) return next(e)
+    const engineLine = await next(e)
+
+    const showsPlan = plan !== null && !isHidden
+    const showsSessions = sessions.length > 1
+    if (!showsPlan && !showsSessions) return engineLine
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const pct = percentOf(plan)
+    const now = await $.clock.now()
     const isOpen = await isPaneOpen($)
-    const isDone = plan.finishedAt !== undefined
-    const width = Math.max(8, Math.min(20, Math.floor(((e.viewport?.columns ?? 100) - 70) / 2)))
+    const isMissionOpen = await isPaneOpen($, MISSION)
+    const width = Math.max(8, Math.min(20, Math.floor(((e.viewport?.columns ?? 100) - 80) / 2)))
+    const working = sessions.filter(s => statusOf(s) === 'working').length
 
     return (
-      <Box flexDirection="row" gap={1}>
-        <Text color={isDone ? 'success' : 'claude'}>{isDone ? '✔' : '▸'}</Text>
-        <Text bold wrap="truncate-end">
-          {plan.title}
-        </Text>
-        <Text color={isDone ? 'success' : 'claude'}>{bar(pct, width)}</Text>
-        <Text bold>{pct}%</Text>
-        <Text dimColor>
-          · {countDone(plan)}/{plan.steps.length} · {fmtDur((plan.finishedAt ?? now) - plan.startedAt)}
-        </Text>
-        <Button
-          key="toggle"
-          label={isOpen ? 'Close' : 'Open'}
-          hotkey="p"
-          onPress={() => (isOpen ? $.ui.close({ id: PANE }) : openPane($, plan))}
-        />
-        <Button key="hide" label="Hide" hotkey="h" onPress={() => update($, bandHiddenAtom, () => true)} />
+      <Box flexDirection="column">
+        <Box flexDirection="row" gap={1}>
+          {showsPlan && plan !== null && (
+            <Box flexDirection="row" gap={1} flexShrink={1}>
+              <Text color={plan.finishedAt !== undefined ? 'success' : 'claude'}>{plan.finishedAt !== undefined ? '✔' : '▸'}</Text>
+              <Text bold wrap="truncate-end">
+                {plan.title}
+              </Text>
+              <Text color={plan.finishedAt !== undefined ? 'success' : 'claude'}>{bar(percentOf(plan), width)}</Text>
+              <Text bold>{percentOf(plan)}%</Text>
+              <Text dimColor>
+                · {countDone(plan)}/{plan.steps.length} · {fmtDur((plan.finishedAt ?? now) - plan.startedAt)}
+              </Text>
+              <Button
+                key="toggle"
+                label={isOpen ? 'Close' : 'Open'}
+                hotkey="p"
+                onPress={() => (isOpen ? $.ui.close({ id: PANE }) : openPane($, plan))}
+              />
+              <Button key="hide" label="Hide" hotkey="h" onPress={() => update($, bandHiddenAtom, () => true)} />
+            </Box>
+          )}
+          <Button
+            key="sessions"
+            label={`Sessions ${sessions.length}${working > 0 ? ` · ${working} working` : ''}`}
+            hotkey="s"
+            onPress={async () => {
+              if (isMissionOpen) return $.ui.close({ id: MISSION })
+              await refreshSessions($)
+              await openMission($)
+            }}
+          />
+        </Box>
+        {engineLine}
+      </Box>
+    )
+  })
+
+  // ── Mission control: every open session in one panel ────────────────────
+  on('ui.render', { component: 'Pane', requestId: MISSION }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const sessions = await read($, sessionsAtom)
+    const self = await read($, selfAtom)
+    await read($, tickAtom)
+    const now = await $.clock.now()
+    const cols = e.viewport?.columns ?? 80
+    const showsBar = cols >= 70
+
+    const count = (status: MissionStatus) => sessions.filter(s => statusOf(s) === status).length
+    const summary = (['working', 'waiting', 'done', 'idle'] as const)
+      .filter(status => count(status) > 0)
+      .map(status => `${count(status)} ${status}`)
+      .join(' · ')
+
+    const detail = (s: MissionEntry) => {
+      const status = statusOf(s)
+      if (status === 'waiting') return 'waiting for you'
+      if (status === 'done') return `done ${fmtClock(s.finishedAt ?? s.updatedAt)}`
+      if (status === 'idle') return 'idle'
+      if (s.step !== undefined && s.total !== undefined && s.startedAt !== undefined)
+        return `step ${s.step}/${s.total} · ${fmtDur(now - s.startedAt)}`
+      return 'working'
+    }
+
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="row" justifyContent="space-between">
+          <Text bold>Sessions</Text>
+          <Text dimColor>{summary || 'none'}</Text>
+        </Box>
+        <Box flexDirection="column" marginTop={1}>
+          {sessions.length === 0 && <Text dimColor>No open sessions yet.</Text>}
+          {sessions.map(s => {
+            const status = statusOf(s)
+            const isSelf = s.id === self?.id
+            return (
+              <Box key={`session-${s.id}`} flexDirection="row" gap={1}>
+                <Box width={2} flexShrink={0}>
+                  <Text color={MISSION_COLOR[status]} dimColor={status === 'idle'}>
+                    {MISSION_ICON[status]}
+                  </Text>
+                </Box>
+                <Box width={16} flexShrink={0}>
+                  <Text bold={isSelf} wrap="truncate-end">
+                    {s.project}
+                  </Text>
+                </Box>
+                <Box flexGrow={1} flexShrink={1}>
+                  <Text wrap="truncate-end" dimColor={s.title === undefined}>
+                    {s.title ?? '—'}
+                  </Text>
+                </Box>
+                {showsBar && (
+                  <Box width={10} flexShrink={0}>
+                    <Text color={MISSION_COLOR[status]} dimColor={s.pct === undefined}>
+                      {bar(s.pct ?? 0, 10)}
+                    </Text>
+                  </Box>
+                )}
+                <Box width={5} flexShrink={0} justifyContent="flex-end">
+                  <Text bold>{s.pct === undefined ? '' : `${s.pct}%`}</Text>
+                </Box>
+                <Box width={18} flexShrink={0}>
+                  <Text dimColor wrap="truncate-end">
+                    {detail(s)}
+                    {isSelf ? ' · this' : ''}
+                  </Text>
+                </Box>
+              </Box>
+            )
+          })}
+        </Box>
       </Box>
     )
   })
