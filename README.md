@@ -57,3 +57,7 @@ Run `/plugin` and disable `progress-board`, or remove it:
 ```
 claude plugin uninstall progress-board
 ```
+
+## License
+
+[MIT](LICENSE) © 2026 Subhadip Saha
